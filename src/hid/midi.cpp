@@ -1,6 +1,6 @@
 #include "hid/midi.h"
 #include "sys/system.h"
-
+#include <memory>
 using namespace daisy;
 
 // Masks to check for message type, and byte content
@@ -11,9 +11,6 @@ const uint8_t kSystemCommonMask = 0xF0;
 const uint8_t kChannelMask      = 0x0F;
 const uint8_t kRealTimeMask     = 0xF8;
 
-// Currently only setting this up to handle 3-byte messages (i.e. Notes, CCs, Pitchbend).
-// We'll have to do some minor tweaking to handle program changes, sysex,
-//    realtime messages, and most system common messages.
 
 // TODO:
 // - provide an input interface so USB or UART data can be passed in.
@@ -24,8 +21,8 @@ void MidiHandler::Init(MidiInputMode in_mode, MidiOutputMode out_mode)
     out_mode_ = out_mode;
     uart_.Init();
     event_q_.Init();
-    incoming_message_.type = MessageLast;
-    pstate_                = ParserEmpty;
+    //incoming_message_.type = MessageLast;
+    pstate_.ResetState();
 }
 
 void MidiHandler::StartReceive()
@@ -53,7 +50,7 @@ void MidiHandler::Listen()
         // Flush the buff, and restart.
         if(!uart_.RxActive())
         {
-            pstate_ = ParserEmpty;
+            pstate_.ResetState();
             uart_.FlushRx();
             StartReceive();
         }
@@ -63,58 +60,70 @@ void MidiHandler::Listen()
 
 void MidiHandler::Parse(uint8_t byte)
 {
-    switch(pstate_)
+    switch(pstate_.GetState())
     {
-        case ParserEmpty:
+        case ParserState::State::ParserEmpty:
+        {
             // check byte for valid Status Byte
             if(byte & kStatusByteMask)
             {
-                // Get MessageType, and Channel
-                incoming_message_.channel = byte & kChannelMask;
-                incoming_message_.type
-                    = static_cast<MidiMessageType>((byte & kMessageMask) >> 4);
-                // Validate, and move on.
-                if(incoming_message_.type < MessageLast)
+				incoming_message_.channel = byte & kChannelMask;
+                incoming_message_.type = static_cast<MidiMessageType>((byte & 0xF0));
+				pstate_.SetReceivedStatusByte(incoming_message_.type);
+                
+				// Mark this status byte as running_status
+                running_status_ = incoming_message_.type;
+                if(pstate_.HasRecievedExpectedMessageData())
                 {
-                    pstate_ = ParserHasStatus;
-                    // Mark this status byte as running_status
-                    running_status_ = incoming_message_.type;
+                    event_q_.Write(incoming_message_);
+                    pstate_.ResetState();
                 }
-                // Else we'll keep waiting for a valid incoming status byte
             }
             else
             {
                 // Handle as running status
-                incoming_message_.type    = running_status_;
-                incoming_message_.data[0] = byte & kDataByteMask;
-                pstate_                   = ParserHasData0;
+                incoming_message_.type = running_status_;
+                if(incoming_message_.channel >= 0)
+				{
+                    incoming_message_.data[0] = running_status_ & incoming_message_.channel; 
+				}
+				else
+				{
+                    incoming_message_.data[0] = running_status_;
+				}
+                pstate_.SetReceivedStatusByte(incoming_message_.type);
+                incoming_message_.data[pstate_.GetNumBytesRecieved()] = byte;
+                pstate_.IncrementDataBytesReceieved();
+                if(pstate_.HasRecievedExpectedMessageData())
+                {
+                    event_q_.Write(incoming_message_);
+                }
             }
-            break;
-        case ParserHasStatus:
-            if((byte & kStatusByteMask) == 0)
+        }
+        break;
+        case ParserState::State::ParserIsExpectingDataBytes:
+            incoming_message_.data[pstate_.GetNumBytesRecieved()] = byte;
+            pstate_.IncrementDataBytesReceieved();
+			if (incoming_message_.type == MidiMessageType::SysexStart)
+			{
+                if(pstate_.GetNumBytesRecieved() == MAX_MIDI_MESSAGE_BUFFER_SIZE)
+                {
+                    event_q_.Write(incoming_message_);
+                    pstate_.ResetState();
+                    //pstate_.SetRecivedStatusByte(1);
+                }
+			}
+            else if(pstate_.HasRecievedExpectedMessageData())
             {
-                incoming_message_.data[0] = byte & kDataByteMask;
-                pstate_                   = ParserHasData0;
-            }
-            else
-            {
-                // invalid message go back to start ;p
-                pstate_ = ParserEmpty;
-            }
-            break;
-        case ParserHasData0:
-            if((byte & kStatusByteMask) == 0)
-            {
-                incoming_message_.data[1] = byte & kDataByteMask;
-                // At this point the message is valid, and we can add this MidiEvent to the queue
                 event_q_.Write(incoming_message_);
+                pstate_.ResetState();
             }
-            // Regardless, of whether the data was valid or not we go back to empty
-            // because either the message is queued for handling or its not.
-            pstate_ = ParserEmpty;
             break;
-        default: break;
+        default:
+			break;
     }
+
+
 }
 
 void MidiHandler::SendMessage(uint8_t *bytes, size_t size)

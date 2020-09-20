@@ -7,6 +7,10 @@
 #include "per/uart.h"
 #include "util/ringbuffer.h"
 
+#ifndef MAX_MIDI_MESSAGE_BUFFER_SIZE
+#define MAX_MIDI_MESSAGE_BUFFER_SIZE 256
+#endif
+
 namespace daisy
 {
 /** @addtogroup external 
@@ -19,15 +23,25 @@ At this time only 3-byte messages are correctly parsed into MidiEvents.
 */
 enum MidiMessageType
 {
-    NoteOff,               /**< & */
-    NoteOn,                /**< & */
-    PolyphonicKeyPressure, /**< & */
-    ControlChange,         /**< & */
-    ProgramChange,         /**< & */
-    ChannelPressure,       /**< & */
-    PitchBend,             /**< & */
-    MessageLast,
-    /**< & */ // maybe change name to MessageUnsupported
+    NoteOff                = 0x80,
+    NoteOn                 = 0x90,
+    PolyphonicKeyPressure  = 0xA0,
+    ControlChange          = 0xB0,
+    ProgramChange          = 0xC0,
+    ChannelPressure        = 0xD0,
+    PitchBend              = 0xE0,
+    SysexStart             = 0xF0,
+    SongPositionPointer    = 0xF1,
+    SongSelect             = 0xF2,
+    TuneRequest            = 0xF6,
+    SysexEnd               = 0xF7,
+    RealTimeTimingClock    = 0xF8,
+    RealTimeStart          = 0xFA,
+    RealTimeContinue       = 0xFB,
+    RealTimeStop           = 0xFC,
+    RealTimmeActiveSensing = 0xFE,
+    RealTimeSystemReset    = 0xFF,
+    //	MessageLast
 };
 
 /** Struct containing note, and velocity data for a given channel.
@@ -39,6 +53,17 @@ struct NoteOnEvent
     uint8_t note;     /**< & */
     uint8_t velocity; /**< & */
 };
+
+/** Struct containing note, and velocity data for a given channel.
+Can be made from MidiEvent
+*/
+struct NoteOffEvent
+{
+    int     channel;  /**< & */
+    uint8_t note;     /**< & */
+    uint8_t velocity; /**< & */
+};
+
 /** Struct containing control number, and value for a given channel.
 Can be made from MidiEvent
 */
@@ -49,34 +74,190 @@ struct ControlChangeEvent
     uint8_t value;          /**< & */
 };
 
+
+struct ProgramChangeEvent
+{
+    int     channel;        /**< & */
+    uint8_t program_number; /**< & */
+};
+
+
+/** Struct containing note, and velocity data for a given channel.
+Can be made from MidiEvent
+*/
+struct PolyphonicKeyPressureEvent
+{
+    int     channel;  /**< & */
+    uint8_t note;     /**< & */
+    uint8_t pressure; /**< & */
+};
+
+
+struct ChannelPressureEvent
+{
+    int     channel;  /**< & */
+    uint8_t pressure; /**< & */
+};
+
+
+struct PitchBendEvent
+{
+    int      channel;    /**< & */
+    uint16_t pitch_bend; /**< & */
+};
+
+
+struct RealTimeEvent
+{
+    enum class EventType
+    {
+        RealTimeTimingClock,
+        RealTimeStart,
+        RealTimeContinue,
+        RealTimeStop,
+        RealTimmeActiveSensing,
+        RealTimeSystemReset
+    };
+
+    EventType real_time_event;
+};
+
 /** Simple MidiEvent with message type, channel, and data[2] members.
 */
 struct MidiEvent
 {
-    // Newer ish.
-    MidiMessageType type;    /**< & */
-    int             channel; /**< & */
-    uint8_t         data[2]; /**< & */
+    MidiMessageType type;                              
+    int             channel;                            /* -1 if channel is not relavent to the MidiEvent (ie, sysex messages) */
+	uint8_t         data[MAX_MIDI_MESSAGE_BUFFER_SIZE];
+    size_t          data_size;
 
     /** Returns the data within the MidiEvent as a NoteOnEvent struct */
     NoteOnEvent AsNoteOn()
     {
         NoteOnEvent m;
         m.channel  = channel;
-        m.note     = data[0];
-        m.velocity = data[1];
+        m.note     = data[1];
+        m.velocity = data[2];
         return m;
     }
 
-    /** Returns the data within the MidiEvent as a NoteOnEvent struct.*/
+	/** Alternative Way to get NoteOnEvent */
+	bool AsNoteOn(NoteOnEvent & m)
+	{
+        if(type == MidiMessageType::NoteOn)
+		{
+            m.channel  = channel;
+            m.note     = data[1];
+            m.velocity = data[2];
+            return true;
+		}
+        return false;
+	}
+
+    /** Returns the data within the MidiEvent as a ControlChangeEvent struct.*/
     ControlChangeEvent AsControlChange()
     {
         ControlChangeEvent m;
         m.channel        = channel;
-        m.control_number = data[0];
-        m.value          = data[1];
+        m.control_number = data[1];
+        m.value          = data[2];
         return m;
     }
+
+    /** A way to get a ControlChangeEvent struct populated. returns false if message is note a ControlChange */
+    bool AsControlChange(ControlChangeEvent & m)
+    {
+        if(type == MidiMessageType::ControlChange)
+		{
+            m.channel        = channel;
+            m.control_number = data[1];
+            m.value          = data[2];
+            return true;
+		}
+        return false;
+    }
+
+	ProgramChangeEvent AsProgramChangeEvent()
+    {
+        ProgramChangeEvent m;
+        m.channel        = channel;
+        m.program_number = data[1];
+        return m;
+    };
+
+	bool AsProgramChangeEvent(ProgramChangeEvent &m)
+    {
+        if(type == MidiMessageType::ProgramChange)
+        {
+            m.channel        = channel;
+            m.program_number = data[1];
+            return true;
+        }
+        return false;
+    };
+
+	PolyphonicKeyPressureEvent AsPolyphonicKeyPressureEvent()
+    {
+        PolyphonicKeyPressureEvent m;
+        m.channel  = channel;
+        m.note     = data[1];
+        m.pressure = data[2];
+        return m;
+    };
+
+	bool AsPolyphonicKeyPressureEvent(PolyphonicKeyPressureEvent &m)
+    {
+        if(type == MidiMessageType::PolyphonicKeyPressure)
+        {
+            m.channel		= channel;
+			m.note			= data[1];
+            m.pressure		= data[2];
+            return true;
+        }
+        return false;
+    };
+
+	ChannelPressureEvent AsChannelPressureEvent()
+    {
+        ChannelPressureEvent m;
+        m.channel  = channel;
+        m.pressure = data[1];
+        return m;
+    };
+
+
+    bool AsChannelPressureEvent(ChannelPressureEvent &m)
+    {
+        if(type == MidiMessageType::ChannelPressure)
+        {
+            m.channel  = channel;
+            m.pressure = data[1];
+            return true;
+        }
+        return false;
+    };
+
+	PitchBendEvent AsPitchBendEvent()
+    {
+        PitchBendEvent m;
+        m.channel  = channel;
+		// TODO: FIX ME, this needs to put data[1] and data[2] into  uint16_t....
+        m.pitch_bend = data[1]  ;
+        return m;
+    };
+
+    bool AsPitchBendEvent(PitchBendEvent &m)
+    {
+        if(type == MidiMessageType::PitchBend)
+        {
+            m.channel  = channel;
+            // TODO: FIX ME, this needs to put data[1] and data[2] into  uint16_t....
+            m.pitch_bend = data[1];
+            return true;
+        }
+        return false;
+    };
+
 };
 
 /** 
@@ -147,13 +328,82 @@ class MidiHandler
     */
     void SendMessage(uint8_t *bytes, size_t size);
 
+	void SetInterpretZeroVelocityNoteOnAsNoteOffMessage(bool setInterpretZeroVelocityNoteOnAsNoteOffMessage);
 
   private:
-    enum ParserState
-    {
-        ParserEmpty,
-        ParserHasStatus,
-        ParserHasData0,
+
+	  static int16_t GetExpectedMessageSizeForMidiMessageType(MidiMessageType midiMessageType)	// -1 if unknown
+	  {
+          switch(midiMessageType)
+          {
+              case NoteOff:
+              case NoteOn:
+              case PolyphonicKeyPressure:
+              case ControlChange:
+              case ProgramChange:
+              case ChannelPressure:
+              case PitchBend:
+              case SysexStart:
+              case SongPositionPointer:
+              case SongSelect: 
+				  return 2;
+              case TuneRequest:
+              case SysexEnd: 
+				  return 0;
+              case RealTimeTimingClock:
+              case RealTimeStart:
+              case RealTimeContinue:
+              case RealTimeStop:
+              case RealTimmeActiveSensing:
+              case RealTimeSystemReset:
+				  return 1;
+          }
+          return -1;
+	  }
+	  class ParserState
+	  {
+
+        public:
+          enum State
+          {
+              ParserEmpty,
+           //   ParserHasStatus,
+              ParserIsExpectingDataBytes,
+          };
+
+		  inline void ResetState()
+		  { 
+			  state_ = ParserEmpty;
+              numBytesRecieved_ = 0;
+		  }
+
+		  inline void SetReceivedStatusByte(MidiMessageType messageType, bool isRunningMessage = false) // set -1 if unknown (sysex)
+		  {
+              numBytesRecieved_ = isRunningMessage  ? messageType == MidiMessageType::SysexStart ? 0 : 1 : 1;
+			  messageType_ = messageType;
+          }
+		  inline void IncrementDataBytesReceieved()
+          { 
+			  state_ = ParserIsExpectingDataBytes;
+			  numBytesRecieved_++;
+          }
+		  inline bool HasRecievedExpectedMessageData()
+		  {
+              return (MidiHandler::GetExpectedMessageSizeForMidiMessageType(messageType_) >= numBytesRecieved_);
+          }
+		  inline State GetState()
+		  { 
+			  return state_;
+		  }
+          inline uint16_t GetNumBytesRecieved() 
+		  { 
+			  return numBytesRecieved_;
+		  }
+
+	  private:
+          State   state_;
+          uint8_t numBytesRecieved_ = 0;
+          MidiMessageType messageType_;
     };
     MidiInputMode              in_mode_;
     MidiOutputMode             out_mode_;
@@ -163,6 +413,7 @@ class MidiHandler
     RingBuffer<MidiEvent, 256> event_q_;
     uint32_t                   last_read_; // time of last byte
     MidiMessageType            running_status_;
+    bool                       interpret_zero_velocity_note_on_as_note_off_message_;
 };
 
 /** @} */
